@@ -5,9 +5,7 @@ const debounce = (fn, delay) => {
     let timeoutId;
     return function (event) {
         clearTimeout(timeoutId);
-        timeoutId = setTimeout(function () {
-            fn(event);
-        }, delay);
+        timeoutId = setTimeout(() => fn(event), delay);
     };
 };
 
@@ -15,17 +13,16 @@ const debounce = (fn, delay) => {
 const CACHE_DURATION = {
     timeInMinutes: 2,
     calculateMilliseconds: function () {
-        return CACHE_DURATION.timeInMinutes * 60 * 1000;
+        return this.timeInMinutes * 60 * 1000;
     }
 };
 
 // Cache management using HOF
 const withCache = (fn) => {
     const cache = {};
-
     return async function (id) {
         const key = JSON.stringify(id);
-        const cached = cache.hasOwnProperty(key) ? cache[key] : null;
+        const cached = cache[key];
 
         if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION.calculateMilliseconds()) {
             return cached.value;
@@ -44,7 +41,28 @@ const state = {
     chartInterval: null
 };
 
+// Local Storage Management
+const LOCAL_STORAGE_KEY = 'cryptoTrackerState';
 
+const saveToLocalStorage = () => {
+    const dataToSave = {
+        selectedCurrencies: state.selectedCurrencies
+    };
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToSave));
+};
+
+const loadFromLocalStorage = () => {
+    try {
+        const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (savedData) {
+            const parsedData = JSON.parse(savedData);
+            state.selectedCurrencies = parsedData.selectedCurrencies || [];
+        }
+    } catch (error) {
+        console.error('Error loading from localStorage:', error);
+        state.selectedCurrencies = [];
+    }
+};
 
 // API URLs
 const API_URLS = {
@@ -52,7 +70,7 @@ const API_URLS = {
     cryptoCompare: 'https://min-api.cryptocompare.com/data'
 };
 
-// API Service with Fetch
+// API Service
 const api = {
     async getCurrencies() {
         try {
@@ -66,11 +84,11 @@ const api = {
         }
     },
 
-    getCurrencyDetails: withCache(async function (id) {
+    getCurrencyDetails: withCache(async (id) => {
         try {
             const response = await fetch(`${API_URLS.base}/coins/${id}`);
             if (!response.ok) throw new Error('Network response was not ok');
-            return await response.json();
+            return response.json();
         } catch (error) {
             console.error('Error fetching currency details:', error);
             throw error;
@@ -81,7 +99,7 @@ const api = {
         try {
             const response = await fetch(`${API_URLS.cryptoCompare}/pricemulti?fsyms=${symbols.join(',')}&tsyms=USD`);
             if (!response.ok) throw new Error('Network response was not ok');
-            return await response.json();
+            return response.json();
         } catch (error) {
             console.error('Error fetching live prices:', error);
             throw error;
@@ -90,10 +108,8 @@ const api = {
 };
 
 // UI Components
-const createCurrencyCard = function (currency) {
-    const isSelected = Boolean(state.selectedCurrencies.find(function (c) {
-        return c.id === currency.id;
-    }));
+const createCurrencyCard = (currency) => {
+    const isSelected = state.selectedCurrencies.some(c => c.id === currency.id);
 
     return `
         <div class="col-12 col-md-6 col-lg-4 mb-4">
@@ -102,15 +118,23 @@ const createCurrencyCard = function (currency) {
                     <h5 class="card-title">${currency.name}</h5>
                     <h6 class="card-subtitle mb-2 text-muted">${currency.symbol.toUpperCase()}</h6>
                     
-                    <button class="btn btn-info btn-sm me-2 info-btn" 
-                            onclick="handleMoreInfo('${currency.id}')">
+                    <button type="button" class="btn btn-info btn-sm me-2 info-btn" 
+                            onclick="handleMoreInfo('${currency.id}', event)">
                         More Info
                     </button>
                     
-                    <button class="btn ${isSelected ? 'btn-danger' : 'btn-success'} btn-sm toggle-btn"
-                            onclick="handleToggleSelection('${currency.id}')">
-                        ${isSelected ? 'Remove from Report' : 'Add to Report'}
-                    </button>
+                    <div class="form-check form-switch d-inline-block">
+                        <input class="form-check-input" 
+                               type="checkbox" 
+                               role="switch" 
+                               id="toggleReport${currency.id}"
+                               ${isSelected ? 'checked' : ''}
+                               onchange="handleToggleSelection('${currency.id}')"
+                        >
+                        <label class="form-check-label" for="toggleReport${currency.id}">
+                            Add to Report
+                        </label>
+                    </div>
                     
                     <div class="currency-info mt-3" style="display: none;"></div>
                 </div>
@@ -122,12 +146,10 @@ const createCurrencyCard = function (currency) {
 // Chart Management
 let chart = null;
 
-const initializeChart = function () {
+const initializeChart = () => {
     if (!chart) {
         chart = new CanvasJS.Chart("chartContainer", {
-            title: {
-                text: "Real-time Cryptocurrency Prices (USD)"
-            },
+            title: { text: "Real-time Cryptocurrency Prices (USD)" },
             axisX: {
                 title: "Time",
                 valueFormatString: "HH:mm:ss"
@@ -142,61 +164,61 @@ const initializeChart = function () {
                 horizontalAlign: "center",
                 dockInsidePlotArea: true
             },
-            data: state.selectedCurrencies.map(function (currency) {
-                return {
-                    type: "line",
-                    name: currency.symbol.toUpperCase(),
-                    showInLegend: true,
-                    dataPoints: []
-                };
-            })
+            data: state.selectedCurrencies.map(currency => ({
+                type: "line",
+                name: currency.symbol.toUpperCase(),
+                showInLegend: true,
+                dataPoints: []
+            }))
         });
     }
     return chart;
 };
 
 // Event Handlers
-const handleMoreInfo = async function (currencyId) {
+const handleMoreInfo = async (currencyId, event) => {
+    if (event) {
+        event.preventDefault();
+    }
+
     const card = document.querySelector(`[data-currency-id="${currencyId}"]`);
     const infoDiv = card.querySelector('.currency-info');
 
-    if (infoDiv.style.display === 'none') {
-        showLoading();
-        try {
-            const details = await api.getCurrencyDetails(currencyId);
-            const prices = details.market_data.current_price;
-            infoDiv.innerHTML = `
-                <img src="${details.image.small}" class="mb-2" alt="${details.name}">
-                <p class="mb-1">USD: $${prices.usd}</p>
-                <p class="mb-1">EUR: €${prices.eur}</p>
-                <p class="mb-1">ILS: ₪${prices.ils}</p>
-            `;
-            infoDiv.style.display = 'block';
-        } catch (error) {
-            infoDiv.innerHTML = '<p class="text-danger">Error loading details</p>';
-            infoDiv.style.display = 'block';
-        } finally {
-            hideLoading();
+    // First toggle the display
+    if (infoDiv.style.display === 'none' || !infoDiv.style.display) {
+        infoDiv.style.display = 'block';
+        // Only fetch data if we don't already have it
+        if (!infoDiv.dataset.loaded) {
+            try {
+                showLoading();
+                const details = await api.getCurrencyDetails(currencyId);
+                const prices = details.market_data.current_price;
+                infoDiv.innerHTML = `
+                    <img src="${details.image.small}" class="mb-2" alt="${details.name}">
+                    <p class="mb-1">USD: $${prices.usd}</p>
+                    <p class="mb-1">EUR: €${prices.eur}</p>
+                    <p class="mb-1">ILS: ₪${prices.ils}</p>
+                `;
+                infoDiv.dataset.loaded = 'true';
+            } catch (error) {
+                infoDiv.innerHTML = '<p class="text-danger">Error loading details</p>';
+            } finally {
+                hideLoading();
+            }
         }
     } else {
         infoDiv.style.display = 'none';
     }
 };
 
-const handleToggleSelection = function (currencyId) {
-    const currency = state.currencies.find(function (c) {
-        return c.id === currencyId;
-    });
+const handleToggleSelection = (currencyId) => {
+    const currency = state.currencies.find(c => c.id === currencyId);
     if (!currency) return;
 
-    const isSelected = Boolean(state.selectedCurrencies.find(function (c) {
-        return c.id === currencyId;
-    }));
+    const isSelected = state.selectedCurrencies.some(c => c.id === currencyId);
 
     if (isSelected) {
-        state.selectedCurrencies = state.selectedCurrencies.filter(function (c) {
-            return c.id !== currencyId;
-        });
+        state.selectedCurrencies = state.selectedCurrencies.filter(c => c.id !== currencyId);
     } else if (state.selectedCurrencies.length >= 5) {
         showReportModal(currency);
         return;
@@ -204,87 +226,49 @@ const handleToggleSelection = function (currencyId) {
         state.selectedCurrencies.push(currency);
     }
 
+    saveToLocalStorage();
     updateUI();
 };
 
-// Modal Management
-const showReportModal = function (newCurrency) {
-    const modalContent = `
-        <div class="modal-header">
-            <h5 class="modal-title">Select a currency to remove</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body">
-            ${state.selectedCurrencies.map(function (currency) {
-        return `
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>${currency.name} (${currency.symbol.toUpperCase()})</span>
-                        <button class="btn btn-danger btn-sm" 
-                                onclick="handleReplaceSelection('${currency.id}', '${newCurrency.id}')">
-                            Remove
-                        </button>
-                    </div>
-                `;
-    }).join('')}
-        </div>
-        <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        </div>
-    `;
-
-    document.querySelector('#reportModal .modal-content').innerHTML = modalContent;
-    const reportModal = new bootstrap.Modal(document.getElementById('reportModal'));
-    reportModal.show();
-};
-
-const handleReplaceSelection = function (oldId, newId) {
-    state.selectedCurrencies = state.selectedCurrencies.filter(function (c) {
-        return c.id !== oldId;
-    });
-
-    const newCurrency = state.currencies.find(function (c) {
-        return c.id === newId;
-    });
+const handleReplaceSelection = (oldId, newId) => {
+    state.selectedCurrencies = state.selectedCurrencies.filter(c => c.id !== oldId);
+    const newCurrency = state.currencies.find(c => c.id === newId);
 
     if (newCurrency) {
         state.selectedCurrencies.push(newCurrency);
     }
 
+    saveToLocalStorage();
     const reportModal = bootstrap.Modal.getInstance(document.getElementById('reportModal'));
     reportModal.hide();
 
     updateUI();
 };
 
-const handleSearch = debounce(function (event) {
+const handleSearch = debounce((event) => {
     const searchTerm = event.target.value.toLowerCase();
-    const cards = document.querySelectorAll('.card');
-
-    cards.forEach(function (card) {
-        const text = card.textContent.toLowerCase();
+    document.querySelectorAll('.card').forEach(card => {
         const cardContainer = card.closest('.col-12');
         if (cardContainer) {
+            const text = card.textContent.toLowerCase();
             cardContainer.style.display = text.includes(searchTerm) ? 'block' : 'none';
         }
     });
 }, 300);
 
 // Chart Updates
-const startLiveUpdates = async function () {
+const startLiveUpdates = async () => {
     if (state.selectedCurrencies.length === 0) return;
 
-    const symbols = state.selectedCurrencies.map(function (c) {
-        return c.symbol.toUpperCase();
-    });
-
+    const symbols = state.selectedCurrencies.map(c => c.symbol.toUpperCase());
     const chart = initializeChart();
 
-    const updateChart = async function () {
+    const updateChart = async () => {
         try {
             const prices = await api.getLivePrices(symbols);
             const time = new Date();
 
-            chart.options.data.forEach(function (series, index) {
+            chart.options.data.forEach((series, index) => {
                 const symbol = symbols[index];
                 if (prices[symbol]) {
                     series.dataPoints.push({
@@ -305,18 +289,47 @@ const startLiveUpdates = async function () {
     };
 
     clearInterval(state.chartInterval);
-    updateChart(); // Initial update
+    updateChart();
     state.chartInterval = setInterval(updateChart, 2000);
 };
 
-const stopLiveUpdates = function () {
+const stopLiveUpdates = () => {
     clearInterval(state.chartInterval);
     state.chartInterval = null;
 };
 
+// Modal Management
+const showReportModal = (newCurrency) => {
+    const modalContent = `
+        <div class="modal-header">
+            <h5 class="modal-title">Select a currency to remove</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+            ${state.selectedCurrencies.map(currency => `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span>${currency.name} (${currency.symbol.toUpperCase()})</span>
+                    <button class="btn btn-danger btn-sm" 
+                            onclick="handleReplaceSelection('${currency.id}', '${newCurrency.id}')">
+                        Remove
+                    </button>
+                </div>
+            `).join('')}
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        </div>
+    `;
+
+    document.querySelector('#reportModal .modal-content').innerHTML = modalContent;
+    const reportModal = new bootstrap.Modal(document.getElementById('reportModal'));
+    reportModal.show();
+};
+
 // UI Updates
-const updateUI = function () {
+const updateUI = () => {
     const mainContent = document.getElementById('mainContent');
+    const chartContainer = document.getElementById('chartContainer');
     const path = window.location.hash || '#currencies';
 
     switch (path) {
@@ -326,14 +339,14 @@ const updateUI = function () {
                     ${state.currencies.map(createCurrencyCard).join('')}
                 </div>
             `;
-            document.getElementById('chartContainer').style.display = 'none';
+            chartContainer.style.display = 'none';
             stopLiveUpdates();
             break;
 
         case '#reports':
             if (state.selectedCurrencies.length === 0) {
                 mainContent.innerHTML = '<div class="alert alert-info">No currencies selected for report</div>';
-                document.getElementById('chartContainer').style.display = 'none';
+                chartContainer.style.display = 'none';
                 stopLiveUpdates();
             } else {
                 mainContent.innerHTML = `
@@ -344,7 +357,7 @@ const updateUI = function () {
                         </div>
                     </div>
                 `;
-                document.getElementById('chartContainer').style.display = 'block';
+                chartContainer.style.display = 'block';
                 startLiveUpdates();
             }
             break;
@@ -364,31 +377,36 @@ const updateUI = function () {
                                 <p>Location: Hamerkaz, Israel</p>
                                 <div class="mt-4">
                                     <h5>About This Project</h5>
-                                    <p>Hey! I'm excited to share this cryptocurrency tracking platform I've developed. It's a dynamic website that lets you monitor real-time crypto prices, create custom watchlists, and view detailed market data. I built it using modern web technologies including HTML5, CSS3, JavaScript, and integrated multiple APIs to provide live market updates. The project showcases my passion for both web development and the cryptocurrency space.</p>
+                                    <p>Hey! I'm excited to share this cryptocurrency tracking platform I've developed. 
+                                       It's a dynamic website that lets you monitor real-time crypto prices, create custom 
+                                       watchlists, and view detailed market data. I built it using modern web technologies 
+                                       including HTML5, CSS3, JavaScript, and integrated multiple APIs to provide live 
+                                       market updates. The project showcases my passion for both web development and 
+                                       the cryptocurrency space.</p>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
             `;
-            document.getElementById('chartContainer').style.display = 'none';
+            chartContainer.style.display = 'none';
             stopLiveUpdates();
             break;
     }
 };
 
 // Loading State
-const showLoading = function () {
+const showLoading = () => {
     document.getElementById('loadingSpinner').style.display = 'flex';
 };
 
-const hideLoading = function () {
+const hideLoading = () => {
     document.getElementById('loadingSpinner').style.display = 'none';
 };
 
 // Navigation
-const handleNavigation = function () {
-    document.querySelectorAll('.nav-link').forEach(function (link) {
+const handleNavigation = () => {
+    document.querySelectorAll('.nav-link').forEach(link => {
         link.classList.remove('active');
     });
     const currentHash = window.location.hash || '#currencies';
@@ -400,10 +418,11 @@ const handleNavigation = function () {
 };
 
 // Initialize Application
-const initialize = async function () {
+const initialize = async () => {
     try {
         showLoading();
         state.currencies = await api.getCurrencies();
+        loadFromLocalStorage();
         handleNavigation();
     } catch (error) {
         console.error('Error initializing application:', error);
